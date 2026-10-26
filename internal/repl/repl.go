@@ -47,7 +47,11 @@ func Run(s *store.Store, r io.Reader, w io.Writer) error {
 
 			key := args[0]
 			value := args[1]
-			s.Set(key, value)
+			if err := s.Set(key, value); err != nil {
+				fmt.Fprintf(w, "ERR SET ko: %v\n", err)
+				continue
+			}
+
 			fmt.Fprintln(w, "OK")
 		case "del":
 			if len(args) != 1 {
@@ -55,7 +59,12 @@ func Run(s *store.Store, r io.Reader, w io.Writer) error {
 				continue
 			}
 			key := args[0]
-			if s.Del(key) {
+			ok, err := s.Del(key)
+			if err != nil {
+				fmt.Fprintf(w, "ERR DEL ko: %v\n", err)
+				continue
+			}
+			if ok {
 				fmt.Fprintln(w, "1")
 			} else {
 				fmt.Fprintln(w, "0")
