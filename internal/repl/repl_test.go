@@ -3,6 +3,7 @@ package repl
 import (
 	"bufio"
 	"bytes"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -177,11 +178,16 @@ func TestRepl(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := store.New()
+			s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatalf("unable to create store: %v", err)
+			}
+			defer s.Close()
+
 			r := strings.NewReader(tc.in)
 			var buf bytes.Buffer
 
-			err := Run(s, r, &buf)
+			err = Run(s, r, &buf)
 
 			if tc.wantErr != (err != nil) {
 				t.Fatalf("error: got %v, want %v", err, tc.wantErr)
