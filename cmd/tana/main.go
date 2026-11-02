@@ -17,7 +17,7 @@ func main() {
 
 	s, err := store.Open(*dataPtr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "there was an error starting tana: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v", fmt.Errorf("there was an error starting tana: %w\n", err))
 		os.Exit(1)
 	}
 
