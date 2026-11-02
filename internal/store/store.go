@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 )
 
-const setOperationKey = "set"
-const delOperationKey = "del"
+const (
+	setOperationKey = "set"
+	delOperationKey = "del"
+)
 
 type Store struct {
 	log     *os.File
@@ -22,7 +25,7 @@ type op struct {
 }
 
 func Open(path string) (*Store, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -33,6 +36,7 @@ func Open(path string) (*Store, error) {
 	}
 
 	if err := store.replay(); err != nil {
+		f.Close()
 		return nil, err
 	}
 
@@ -40,24 +44,62 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) replay() error {
-	sc := bufio.NewScanner(s.log)
-	for sc.Scan() {
+	r := bufio.NewReader(s.log)
+	var bytesRead int
+	for {
 		var logEntry op
-		if err := json.Unmarshal([]byte(sc.Text()), &logEntry); err != nil {
+
+		b, err := r.ReadBytes('\n')
+		if err != nil && err != io.EOF {
 			return err
 		}
+		if len(b) == 0 {
+			break
+		}
 
-		switch logEntry.Type {
-		case setOperationKey:
-			s.applySet(logEntry.Key, logEntry.Value)
-		case delOperationKey:
-			s.applyDel(logEntry.Key)
-		default:
-			return fmt.Errorf("unknown command found in log db: %v", logEntry.Type)
+		finishWithNewLine := err == nil
+
+		if err := json.Unmarshal(b, &logEntry); err != nil {
+			if finishWithNewLine {
+				return fmt.Errorf("corrupted log at byte %d: %w", bytesRead, err)
+			}
+
+			if err := s.log.Truncate(int64(bytesRead)); err != nil {
+				return err
+			}
+			break
+		}
+
+		if err := s.apply(logEntry); err != nil {
+			return err
+		}
+		bytesRead += len(b)
+
+		if !finishWithNewLine {
+			if _, err := s.log.Write([]byte("\n")); err != nil {
+				return err
+			}
+			if err := s.log.Sync(); err != nil {
+				return err
+			}
+			break
 		}
 	}
 
-	return sc.Err()
+	return nil
+}
+
+func (s *Store) apply(logOp op) error {
+	switch logOp.Type {
+	case setOperationKey:
+		s.applySet(logOp.Key, logOp.Value)
+	case delOperationKey:
+		s.applyDel(logOp.Key)
+	default:
+		return fmt.Errorf("unknown command found in log db: %v", logOp.Type)
+	}
+
+	return nil
 }
 
 func (s *Store) writeToLog(opType string, key string, value string) error {

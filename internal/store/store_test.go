@@ -1,6 +1,7 @@
 package store
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -172,4 +173,107 @@ func OpenStore(t *testing.T, dbPath string) *Store {
 	}
 
 	return s
+}
+
+func TestReplayAndRepair(t *testing.T) {
+	testCases := []struct {
+		name               string
+		logContent         string
+		wantErr            bool
+		wantStoreAfterOpen map[string]string
+	}{
+		{
+			name:               "empty file",
+			logContent:         "",
+			wantStoreAfterOpen: map[string]string{},
+		},
+		{
+			name:               "two valid lines",
+			logContent:         `{"op":"set","key":"a","value":"1"}` + "\n" + `{"op":"set","key":"b","value":"2"}` + "\n",
+			wantStoreAfterOpen: map[string]string{"a": "1", "b": "2"},
+		},
+		{
+			name:               "valid line + incomplete final line",
+			logContent:         `{"op":"set","key":"a","value":"1"}` + "\n" + `{"op":"set","key":"b","va`,
+			wantStoreAfterOpen: map[string]string{"a": "1"},
+		},
+		{
+			name:       "valid + garbage with new line + valid",
+			logContent: `{"op":"set","key":"a","value":"1"}` + "\n" + "garbage" + "\n" + `{"op":"set","key":"b","value":"2"}` + "\n",
+			wantErr:    true,
+		},
+		{
+			name:       "valid + garbage with new line at the end",
+			logContent: `{"op":"set","key":"a","value":"1"}` + "\n" + "garbage" + "\n",
+			wantErr:    true,
+		},
+		{
+			name:               "valid + valid without new line at the end",
+			logContent:         `{"op":"set","key":"a","value":"1"}` + "\n" + `{"op":"set","key":"b","value":"2"}`,
+			wantStoreAfterOpen: map[string]string{"a": "1", "b": "2"},
+		},
+		{
+			name:       "valid + unknown command",
+			logContent: `{"op":"set","key":"a","value":"1"}` + "\n" + `{"op":"boh","key":"x"}` + "\n",
+			wantErr:    true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := filepath.Join(t.TempDir(), "test.db")
+			err := os.WriteFile(logPath, []byte(tc.logContent), 0600)
+			if err != nil {
+				t.Fatalf("error while creating log file: %v", err)
+			}
+
+			s, err := Open(logPath)
+			if tc.wantErr != (err != nil) {
+				t.Errorf("error, got %v, want error %v", err, tc.wantErr)
+				return
+			}
+			if tc.wantErr {
+				CheckCorruptedFileNotUpdated(t, logPath, tc.logContent)
+				return
+			}
+
+			if !maps.Equal(s.storage, tc.wantStoreAfterOpen) {
+				t.Errorf("map after first open, got %v, want %v", s.storage, tc.wantStoreAfterOpen)
+				return
+			}
+
+			if err := s.Set("z", "9"); err != nil {
+				t.Fatalf("error setting z key: %v", err)
+			}
+			tcMaps := maps.Clone(tc.wantStoreAfterOpen)
+			tcMaps["z"] = "9"
+
+			if err := s.Close(); err != nil {
+				t.Fatalf("error closing store: %v", err)
+			}
+
+			s, err = Open(logPath)
+			if err != nil {
+				t.Fatalf("error restarting store: %v", err)
+			}
+			defer s.Close()
+
+			if !maps.Equal(s.storage, tcMaps) {
+				t.Errorf("store maps after reopening, got %v, want %v", s.storage, tcMaps)
+			}
+		})
+	}
+}
+
+func CheckCorruptedFileNotUpdated(t *testing.T, logPath string, expectedContent string) {
+	t.Helper()
+
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("error while reading log file: %v", err)
+	}
+
+	if string(log) != expectedContent {
+		t.Errorf("corrupted file, got %s, want %s", string(log), expectedContent)
+	}
 }
