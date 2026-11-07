@@ -1,9 +1,12 @@
 package store
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -222,7 +225,7 @@ func TestReplayAndRepair(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			logPath := filepath.Join(t.TempDir(), "test.db")
-			err := os.WriteFile(logPath, []byte(tc.logContent), 0600)
+			err := os.WriteFile(logPath, []byte(tc.logContent), 0o600)
 			if err != nil {
 				t.Fatalf("error while creating log file: %v", err)
 			}
@@ -275,5 +278,83 @@ func CheckCorruptedFileNotUpdated(t *testing.T, logPath string, expectedContent 
 
 	if string(log) != expectedContent {
 		t.Errorf("corrupted file, got %s, want %s", string(log), expectedContent)
+	}
+}
+
+func TestRaceCondition(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s := OpenStore(t, dbPath)
+	defer s.Close()
+
+	var wg sync.WaitGroup
+
+	for i := range 100 {
+		wg.Go(func() {
+			k := fmt.Sprintf("test_key_%d", i)
+			v := fmt.Sprintf("test_value_%d", i)
+
+			if err := s.Set(k, v); err != nil {
+				t.Errorf("set, error: %v", err)
+				return
+			}
+
+			result, ok := s.Get(k)
+			if !ok {
+				t.Errorf("get, failed")
+				return
+			}
+			if result != v {
+				t.Errorf("get, got %s, want %s", result, v)
+				return
+			}
+
+			ok, err := s.Del(k)
+			if err != nil {
+				t.Errorf("del, got error: %v", err)
+				return
+			}
+			if !ok {
+				t.Errorf("del, failed")
+				return
+			}
+		})
+	}
+
+	wg.Wait()
+
+	if len(s.storage) != 0 {
+		t.Errorf("len storage, got %d, want 0", len(s.storage))
+	}
+}
+
+func TestRaceConditionOnSameKey(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s := OpenStore(t, dbPath)
+	defer s.Close()
+
+	if err := s.Set("key", "value"); err != nil {
+		t.Fatalf("set key, error: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var n atomic.Int32
+
+	for range 50 {
+		wg.Go(func() {
+			ok, err := s.Del("key")
+			if err != nil {
+				t.Errorf("del error: %v", err)
+				return
+			}
+			if ok {
+				n.Add(1)
+			}
+		})
+	}
+
+	wg.Wait()
+
+	if n.Load() != 1 {
+		t.Errorf("ok deletions, got %d, want 1", n.Load())
 	}
 }

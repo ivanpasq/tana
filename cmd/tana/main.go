@@ -67,7 +67,7 @@ func main() {
 }
 
 func startRepl(s *store.Store, conn net.Conn) {
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	err := repl.Run(s, conn, conn)
 	if err != nil {

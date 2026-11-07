@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 )
 
 const (
@@ -14,6 +15,7 @@ const (
 )
 
 type Store struct {
+	mu      sync.Mutex
 	log     *os.File
 	storage map[string]string
 }
@@ -102,6 +104,52 @@ func (s *Store) apply(logOp op) error {
 	return nil
 }
 
+func (s *Store) Get(key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	val, ok := s.storage[key]
+	return val, ok
+}
+
+func (s *Store) Set(key string, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.writeToLog(setOperationKey, key, value); err != nil {
+		return err
+	}
+
+	s.applySet(key, value)
+
+	return nil
+}
+
+func (s *Store) applySet(key string, value string) {
+	s.storage[key] = value
+}
+
+func (s *Store) Del(key string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, ok := s.storage[key]
+	if !ok {
+		return false, nil
+	}
+
+	if err := s.writeToLog(delOperationKey, key, ""); err != nil {
+		return false, err
+	}
+
+	s.applyDel(key)
+	return true, nil
+}
+
+func (s *Store) applyDel(key string) {
+	delete(s.storage, key)
+}
+
 func (s *Store) writeToLog(opType string, key string, value string) error {
 	logEntry := op{
 		Type:  opType,
@@ -123,41 +171,4 @@ func (s *Store) writeToLog(opType string, key string, value string) error {
 
 func (s *Store) Close() error {
 	return s.log.Close()
-}
-
-func (s *Store) Get(key string) (string, bool) {
-	val, ok := s.storage[key]
-	return val, ok
-}
-
-func (s *Store) Set(key string, value string) error {
-	if err := s.writeToLog(setOperationKey, key, value); err != nil {
-		return err
-	}
-
-	s.applySet(key, value)
-
-	return nil
-}
-
-func (s *Store) applySet(key string, value string) {
-	s.storage[key] = value
-}
-
-func (s *Store) Del(key string) (bool, error) {
-	_, ok := s.storage[key]
-	if !ok {
-		return false, nil
-	}
-
-	if err := s.writeToLog(delOperationKey, key, ""); err != nil {
-		return false, err
-	}
-
-	s.applyDel(key)
-	return true, nil
-}
-
-func (s *Store) applyDel(key string) {
-	delete(s.storage, key)
 }
